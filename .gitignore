@@ -52,3 +52,8 @@ test/tracetesting/tracetesting-vars.yaml
 *.apk
 
 !src/currency/build
+
+# Secrets
+.env.secret
+*.secret.yaml
+.secrets/
