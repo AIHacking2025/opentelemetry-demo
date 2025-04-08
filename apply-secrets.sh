@@ -12,12 +12,9 @@ fi
 # Source the secret environment variables
 source .env.secret
 
-# Create the namespace if it doesn't exist
-kubectl create namespace otel-demo --dry-run=client -o yaml | kubectl apply -f -
-
-# Create the secret
+# Create the secret in the default namespace
 kubectl create secret generic product-catalog-db-secret \
-    --namespace otel-demo \
+    --namespace default \
     --from-literal=database-url="$NEON_DB_URL" \
     --dry-run=client -o yaml | kubectl apply -f -
 

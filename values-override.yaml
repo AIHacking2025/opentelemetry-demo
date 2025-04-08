@@ -1,13 +1,8 @@
 components:
-  productCatalog:
+  product-catalog:
     env:
       - name: DATABASE_URL
         valueFrom:
           secretKeyRef:
             name: product-catalog-db-secret
-            key: database-url
-
-secrets:
-  productCatalogDb:
-    create: false  # We'll create the secret separately
-    name: product-catalog-db-secret 
+            key: database-url 
