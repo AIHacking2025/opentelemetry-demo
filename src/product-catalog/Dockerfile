@@ -11,6 +11,8 @@ RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=bind,source=./src/product-catalog/go.mod,target=go.mod \
     go mod download
 
+COPY src/product-catalog/db/migrations /usr/src/app/db/migrations
+
 RUN --mount=type=cache,target=/go/pkg/mod/ \
     --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=bind,rw,source=./src/product-catalog,target=. \
@@ -21,6 +23,7 @@ FROM alpine AS release
 WORKDIR /usr/src/app/
 
 COPY --from=builder /go/bin/product-catalog/ ./
+COPY --from=builder /usr/src/app/db/migrations ./db/migrations
 
 EXPOSE ${PRODUCT_CATALOG_PORT}
 ENTRYPOINT [ "./product-catalog" ]

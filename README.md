@@ -44,6 +44,50 @@ your preferred deployment method:
 - [Docker](https://opentelemetry.io/docs/demo/docker_deployment/)
 - [Kubernetes](https://opentelemetry.io/docs/demo/kubernetes_deployment/)
 
+## Bifrost: Database Integration
+
+The Bifrost modification adds PostgreSQL database support to the Product Catalog service, replacing the original JSON file-based storage. This enhancement provides:
+
+- Persistent storage for product data
+- Better scalability and query capabilities
+- Support for serverless PostgreSQL via Neon
+
+### Setup Instructions
+
+1. **Database Configuration**
+
+   Create a `.env.secret` file in the root directory with your database URL:
+   ```
+   NEON_DB_URL="postgres://user:password@your-neon-db-host:5432/dbname?sslmode=require"
+   ```
+
+2. **Apply Kubernetes Secrets**
+
+   Run the provided script to create necessary Kubernetes secrets:
+   ```bash
+   ./apply-secrets.sh
+   ```
+
+3. **Deploy with Helm**
+
+   Install the demo with the database configuration:
+   ```bash
+   helm install otel-demo open-telemetry/opentelemetry-demo -f values-override.yaml
+   ```
+
+### Security Notes
+
+- The `.env.secret` file and other sensitive files are automatically excluded from Git
+- Database credentials are stored securely in Kubernetes secrets
+- The connection string uses SSL mode for secure database communication
+
+### Files Added/Modified
+
+- `values-override.yaml`: Helm configuration for database integration
+- `.env.secret`: Database connection details (not committed)
+- `apply-secrets.sh`: Script to apply Kubernetes secrets
+- `src/product-catalog/`: Modified service code for database support
+
 ## Documentation
 
 For detailed documentation, see [Demo Documentation][docs]. If you're curious

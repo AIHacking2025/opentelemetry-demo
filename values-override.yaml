@@ -1,0 +1,8 @@
+components:
+  product-catalog:
+    env:
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef:
+            name: product-catalog-db-secret
+            key: database-url 

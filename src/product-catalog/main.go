@@ -9,12 +9,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,29 +34,23 @@ import (
 	otelhooks "github.com/open-feature/go-sdk-contrib/hooks/open-telemetry/pkg"
 	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
 	"github.com/open-feature/go-sdk/openfeature"
+	"github.com/opentelemetry/opentelemetry-demo/src/product-catalog/db"
 	pb "github.com/opentelemetry/opentelemetry-demo/src/product-catalog/genproto/oteldemo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 var (
 	log               *logrus.Logger
-	catalog           []*pb.Product
 	resource          *sdkresource.Resource
 	initResourcesOnce sync.Once
 )
 
-const DEFAULT_RELOAD_INTERVAL = 10
-
 func init() {
 	log = logrus.New()
-
-	loadProductCatalog()
 }
 
 func initResource() *sdkresource.Resource {
@@ -127,6 +118,7 @@ func main() {
 		}
 		log.Println("Shutdown meter provider")
 	}()
+
 	openfeature.AddHooks(otelhooks.NewTracesHook())
 	err := openfeature.SetProvider(flagd.NewProvider())
 	if err != nil {
@@ -138,7 +130,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	svc := &productCatalog{}
+	// Initialize database
+	database, err := db.New(log)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer database.Close()
+
+	productRepo := db.NewProductRepository(database)
+
+	svc := &productCatalog{
+		repo: productRepo,
+	}
+
 	var port string
 	mustMapEnv(&port, "PRODUCT_CATALOG_PORT")
 
@@ -175,92 +179,7 @@ func main() {
 
 type productCatalog struct {
 	pb.UnimplementedProductCatalogServiceServer
-}
-
-func loadProductCatalog() {
-	log.Info("Loading Product Catalog...")
-	var err error
-	catalog, err = readProductFiles()
-	if err != nil {
-		log.Fatalf("Error reading product files: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Default reload interval is 10 seconds
-	interval := DEFAULT_RELOAD_INTERVAL
-	si := os.Getenv("PRODUCT_CATALOG_RELOAD_INTERVAL")
-	if si != "" {
-		interval, _ = strconv.Atoi(si)
-		if interval <= 0 {
-			interval = DEFAULT_RELOAD_INTERVAL
-		}
-	}
-	log.Infof("Product Catalog reload interval: %d", interval)
-
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				log.Info("Reloading Product Catalog...")
-				catalog, err = readProductFiles()
-				if err != nil {
-					log.Errorf("Error reading product files: %v", err)
-					continue
-				}
-			}
-		}
-	}()
-}
-
-func readProductFiles() ([]*pb.Product, error) {
-
-	// find all .json files in the products directory
-	entries, err := os.ReadDir("./products")
-	if err != nil {
-		return nil, err
-	}
-
-	jsonFiles := make([]fs.FileInfo, 0, len(entries))
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".json") {
-			info, err := entry.Info()
-			if err != nil {
-				return nil, err
-			}
-			jsonFiles = append(jsonFiles, info)
-		}
-	}
-
-	// read the contents of each .json file and unmarshal into a ListProductsResponse
-	// then append the products to the catalog
-	var products []*pb.Product
-	for _, f := range jsonFiles {
-		jsonData, err := os.ReadFile("./products/" + f.Name())
-		if err != nil {
-			return nil, err
-		}
-
-		var res pb.ListProductsResponse
-		if err := protojson.Unmarshal(jsonData, &res); err != nil {
-			return nil, err
-		}
-
-		products = append(products, res.Products...)
-	}
-
-	log.Infof("Loaded %d products", len(products))
-
-	return products, nil
-}
-
-func mustMapEnv(target *string, key string) {
-	value, present := os.LookupEnv(key)
-	if !present {
-		log.Fatalf("Environment Variable Not Set: %q", key)
-	}
-	*target = value
+	repo *db.ProductRepository
 }
 
 func (p *productCatalog) Check(ctx context.Context, req *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
@@ -274,10 +193,17 @@ func (p *productCatalog) Watch(req *healthpb.HealthCheckRequest, ws healthpb.Hea
 func (p *productCatalog) ListProducts(ctx context.Context, req *pb.Empty) (*pb.ListProductsResponse, error) {
 	span := trace.SpanFromContext(ctx)
 
+	products, err := p.repo.ListProducts(ctx)
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
+		span.AddEvent(err.Error())
+		return nil, status.Errorf(codes.Internal, "failed to list products: %v", err)
+	}
+
 	span.SetAttributes(
-		attribute.Int("app.products.count", len(catalog)),
+		attribute.Int("app.products.count", len(products)),
 	)
-	return &pb.ListProductsResponse{Products: catalog}, nil
+	return &pb.ListProductsResponse{Products: products}, nil
 }
 
 func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductRequest) (*pb.Product, error) {
@@ -294,43 +220,36 @@ func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductReque
 		return nil, status.Errorf(codes.Internal, msg)
 	}
 
-	var found *pb.Product
-	for _, product := range catalog {
-		if req.Id == product.Id {
-			found = product
-			break
-		}
-	}
-
-	if found == nil {
+	product, err := p.repo.GetProduct(ctx, req.Id)
+	if err != nil {
 		msg := fmt.Sprintf("Product Not Found: %s", req.Id)
 		span.SetStatus(otelcodes.Error, msg)
 		span.AddEvent(msg)
 		return nil, status.Errorf(codes.NotFound, msg)
 	}
 
-	msg := fmt.Sprintf("Product Found - ID: %s, Name: %s", req.Id, found.Name)
+	msg := fmt.Sprintf("Product Found - ID: %s, Name: %s", req.Id, product.Name)
 	span.AddEvent(msg)
 	span.SetAttributes(
-		attribute.String("app.product.name", found.Name),
+		attribute.String("app.product.name", product.Name),
 	)
-	return found, nil
+	return product, nil
 }
 
 func (p *productCatalog) SearchProducts(ctx context.Context, req *pb.SearchProductsRequest) (*pb.SearchProductsResponse, error) {
 	span := trace.SpanFromContext(ctx)
 
-	var result []*pb.Product
-	for _, product := range catalog {
-		if strings.Contains(strings.ToLower(product.Name), strings.ToLower(req.Query)) ||
-			strings.Contains(strings.ToLower(product.Description), strings.ToLower(req.Query)) {
-			result = append(result, product)
-		}
+	products, err := p.repo.SearchProducts(ctx, req.Query)
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
+		span.AddEvent(err.Error())
+		return nil, status.Errorf(codes.Internal, "failed to search products: %v", err)
 	}
+
 	span.SetAttributes(
-		attribute.Int("app.products_search.count", len(result)),
+		attribute.Int("app.products_search.count", len(products)),
 	)
-	return &pb.SearchProductsResponse{Results: result}, nil
+	return &pb.SearchProductsResponse{Results: products}, nil
 }
 
 func (p *productCatalog) checkProductFailure(ctx context.Context, id string) bool {
@@ -345,9 +264,10 @@ func (p *productCatalog) checkProductFailure(ctx context.Context, id string) boo
 	return failureEnabled
 }
 
-func createClient(ctx context.Context, svcAddr string) (*grpc.ClientConn, error) {
-	return grpc.DialContext(ctx, svcAddr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
-	)
+func mustMapEnv(target *string, key string) {
+	value, present := os.LookupEnv(key)
+	if !present {
+		log.Fatalf("Environment Variable Not Set: %q", key)
+	}
+	*target = value
 }
