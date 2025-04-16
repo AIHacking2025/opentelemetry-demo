@@ -203,7 +203,7 @@ func loadProductCatalog() {
 		for {
 			select {
 			case <-ticker.C:
-				log.Info("Reloading Product Catalog...")
+				log.Info("[TEST] Reloading Product Catalog...")
 				catalog, err = readProductFiles()
 				if err != nil {
 					log.Errorf("Error reading product files: %v", err)

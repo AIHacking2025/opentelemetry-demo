@@ -1,0 +1,7 @@
+components:
+  product-catalog:
+    imageOverride:
+      repository: ghcr.io/open-telemetry/demo
+      tag: latest-product-catalog
+    env:
+      - name: DATABASE_URL 
